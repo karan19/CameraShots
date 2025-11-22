@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  font-family: "Space Grotesk", "Satoshi", "Space Mono", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: radial-gradient(circle at center, #1a1a1a 0%, #000000 70%);
+  color: #f7f8ff;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.glass-sheen {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
+}
+
+.noise-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 0);
+  background-size: 3px 3px;
+  opacity: 0.35;
+  mix-blend-mode: screen;
+}
