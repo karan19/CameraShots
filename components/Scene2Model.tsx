@@ -16,27 +16,47 @@ function LoadedModel({ mode }: { mode: RevealMode }) {
   const baseScaleRef = useRef(1);
   const heightRef = useRef(1);
   const clipPlaneRef = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
-  const materialRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
+  const materialsRef = useRef<THREE.Material[]>([]);
   const { gl } = useThree();
 
   const scene = useMemo(() => {
-    const clone = raw.clone() as THREE.Group;
-    const material = new THREE.MeshPhysicalMaterial({
-      color: "#ffffff",
-      metalness: 0.4,
-      roughness: 0.2,
-      emissive: "#0a0a0a"
-    });
-
+    materialsRef.current = [];
+    const clone = raw.clone(true) as THREE.Group;
     clone.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        mesh.material = material;
+        const hasVertexColors = !!mesh.geometry.getAttribute("color");
+
+        const mapMaterial = (mat?: THREE.Material) => {
+          const cloned =
+            mat && typeof (mat as THREE.Material).clone === "function"
+              ? (mat as THREE.Material).clone()
+              : new THREE.MeshStandardMaterial({ color: "#cccccc" });
+          if ("envMapIntensity" in cloned) {
+            (cloned as THREE.MeshStandardMaterial).envMapIntensity = 0.75;
+          }
+          materialsRef.current.push(cloned);
+          return cloned;
+        };
+
+        if (hasVertexColors) {
+          const material = new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            roughness: 0.32,
+            metalness: 0.18,
+            emissive: "#050505"
+          });
+          mesh.material = material;
+          materialsRef.current.push(material);
+        } else if (Array.isArray(mesh.material)) {
+          mesh.material = mesh.material.map((m) => mapMaterial(m));
+        } else {
+          mesh.material = mapMaterial(mesh.material as THREE.Material | undefined);
+        }
         mesh.castShadow = true;
         mesh.receiveShadow = true;
       }
     });
-    materialRef.current = material;
     return clone;
   }, [raw]);
 
@@ -65,14 +85,18 @@ function LoadedModel({ mode }: { mode: RevealMode }) {
   useEffect(() => {
     elapsedRef.current = 0;
     progressRef.current = 0;
-    if (materialRef.current) {
+    materialsRef.current.forEach((mat) => {
+      const m = mat as THREE.Material & { clippingPlanes?: THREE.Plane[] };
       if (mode === "clip") {
         gl.localClippingEnabled = true;
-        materialRef.current.clippingPlanes = [clipPlaneRef.current];
+        m.clippingPlanes = [clipPlaneRef.current];
       } else {
         gl.localClippingEnabled = false;
-        materialRef.current.clippingPlanes = [];
+        m.clippingPlanes = [];
       }
+    });
+    if (!materialsRef.current.length) {
+      gl.localClippingEnabled = false;
     }
   }, [gl, mode]);
 
