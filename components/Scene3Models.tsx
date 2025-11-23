@@ -4,10 +4,18 @@ import { Html, OrbitControls, useGLTF, useProgress } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Suspense, useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
+import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 
 type RevealMode = "grow" | "clip";
 type Vec3 = [number, number, number];
-type Scene3Props = { mode: RevealMode; pos3: Vec3; rot3: Vec3 };
+type Scene3Props = {
+  mode: RevealMode;
+  pos3: Vec3;
+  rot3: Vec3;
+  focusIndex: number;
+  customFocus?: Vec3 | null;
+  savedPoints?: Vec3[];
+};
 type CityProps = {
   path: string;
   position: [number, number, number];
@@ -147,13 +155,144 @@ function LoadingOverlay() {
   );
 }
 
-export default function Scene3Models({ mode, pos3, rot3 }: Scene3Props) {
+export default function Scene3Models({
+  mode,
+  pos3,
+  rot3,
+  focusIndex,
+  customFocus,
+  savedPoints = []
+}: Scene3Props) {
+const basePoints = useMemo<Vec3[]>(
+  () => [
+    [-2.75, 0.25, -2.25],
+    [-1.25, 0.25, 3.25],
+    [1.25, 0.25, 1.25],
+    [-0.25, 0.25, -3.75]
+  ],
+  []
+);
+const targetPoints = useMemo<Vec3[]>(() => {
+  const list = [...basePoints];
+  if (customFocus) list.push(customFocus);
+  return list;
+}, [basePoints, customFocus]);
+const currentMarker: Vec3 = targetPoints[Math.min(targetPoints.length - 1, Math.max(0, focusIndex))];
+const controlsRef = useRef<OrbitControlsImpl>(null);
+const desiredPos = useRef(new THREE.Vector3());
+const desiredTarget = useRef(new THREE.Vector3());
+const lerpPos = useRef(new THREE.Vector3());
+const lerpTarget = useRef(new THREE.Vector3());
+const userDragging = useRef(false);
+const animateCam = useRef(true);
+const startSph = useRef(new THREE.Spherical());
+const endSph = useRef(new THREE.Spherical());
+const animT = useRef(0);
+const orbitAngles = useMemo<number[]>(() => [45, 120, -140, -45, 60], []);
+
+const computeOffset = (target: Vec3, angleDeg: number, radius = 10, height = 3) => {
+  const angle = THREE.MathUtils.degToRad(angleDeg);
+  return new THREE.Vector3(Math.cos(angle) * radius, height, Math.sin(angle) * radius);
+};
+
+  const computeCameraPos = (target: Vec3, angleDeg: number) => {
+    return new THREE.Vector3(...target).add(computeOffset(target, angleDeg));
+  };
+
+  useEffect(() => {
+    const idx = Math.min(targetPoints.length - 1, Math.max(0, focusIndex));
+    const target = targetPoints[idx];
+    const angle = orbitAngles[Math.min(orbitAngles.length - 1, idx)];
+    const cam = controlsRef.current?.object as THREE.PerspectiveCamera | undefined;
+    const tgtVec = new THREE.Vector3(...target);
+    const currentPos = cam ? cam.position.clone() : tgtVec.clone().add(computeOffset(target, angle));
+    const startOffset = currentPos.clone().sub(tgtVec);
+    const endOffset = computeOffset(target, angle);
+
+    if (startOffset.length() < 1e-3) {
+      startOffset.copy(endOffset);
+    } else {
+      startOffset.setLength(10);
+      startOffset.y = 3;
+    }
+
+    startSph.current.setFromVector3(startOffset);
+    endSph.current.setFromVector3(endOffset);
+
+    desiredTarget.current.copy(tgtVec);
+    desiredPos.current.copy(tgtVec.clone().add(endOffset));
+    // snap camera/controls immediately toward this target before animating
+    if (cam) {
+      cam.position.copy(desiredPos.current);
+      cam.lookAt(tgtVec);
+    }
+    if (controlsRef.current) {
+      controlsRef.current.target.copy(tgtVec);
+      controlsRef.current.update();
+    }
+    lerpPos.current.copy(desiredPos.current);
+    lerpTarget.current.copy(desiredTarget.current);
+    animateCam.current = true;
+    animT.current = 0;
+  }, [focusIndex, targetPoints]);
+
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    const onStart = () => {
+      userDragging.current = true;
+    };
+    const onEnd = () => {
+      userDragging.current = false;
+      // lock desired to user-chosen camera/target
+      desiredPos.current.copy(controls.object.position);
+      desiredTarget.current.copy(controls.target);
+      lerpPos.current.copy(desiredPos.current);
+      lerpTarget.current.copy(desiredTarget.current);
+      animateCam.current = false;
+    };
+    controls.addEventListener("start", onStart);
+    controls.addEventListener("end", onEnd);
+    return () => {
+      controls.removeEventListener("start", onStart);
+      controls.removeEventListener("end", onEnd);
+    };
+  }, []);
+
+  function CameraFollow() {
+    const { camera } = useThree();
+    useFrame((_, delta) => {
+      if (userDragging.current) return;
+      if (!animateCam.current) return;
+      animT.current = Math.min(1, animT.current + delta / 1.0); // ~1s
+      const eased = 1 - Math.pow(1 - animT.current, 3);
+      const tgtVec = desiredTarget.current.clone();
+      const sph = new THREE.Spherical().copy(startSph.current);
+      sph.radius = THREE.MathUtils.lerp(startSph.current.radius, endSph.current.radius, eased);
+      sph.phi = THREE.MathUtils.lerp(startSph.current.phi, endSph.current.phi, eased);
+      sph.theta = THREE.MathUtils.lerp(startSph.current.theta, endSph.current.theta, eased);
+      const orbitVec = new THREE.Vector3().setFromSpherical(sph);
+
+      camera.position.copy(tgtVec.clone().add(orbitVec));
+      lerpTarget.current.copy(tgtVec);
+      camera.lookAt(tgtVec);
+      if (controlsRef.current) {
+        controlsRef.current.target.copy(tgtVec);
+        controlsRef.current.update();
+      }
+      if (animT.current >= 0.999) {
+        animateCam.current = false;
+      }
+    });
+    return null;
+  }
+
   return (
     <Canvas
       className="h-full w-full"
       shadows
       dpr={[1, 2]}
-      camera={{ position: [8, 6, 9], fov: 35, near: 0.1, far: 400 }}
+      camera={{ position: computeCameraPos(targetPoints[0]), fov: 35, near: 0.1, far: 400 }}
     >
       <color attach="background" args={["#06080d"]} />
       <ambientLight intensity={0.5} color="#cfe8ff" />
@@ -178,8 +317,33 @@ export default function Scene3Models({ mode, pos3, rot3 }: Scene3Props) {
           <meshStandardMaterial color="#0c0f14" metalness={0.08} roughness={0.85} />
         </mesh>
         <CityModel path="/models/city_pack_3.glb" position={pos3} rotation={rot3} mode={mode} />
+        {basePoints.map((pt, idx) => (
+          <mesh key={`base-${idx}`} position={pt}>
+            <sphereGeometry args={[0.01, 10, 10]} />
+            <meshStandardMaterial color="#ffffff" emissive="#ffffff" emissiveIntensity={0.6} />
+          </mesh>
+        ))}
+        {currentMarker && (
+          <mesh position={currentMarker}>
+            <sphereGeometry args={[0.02, 12, 12]} />
+            <meshStandardMaterial color="#7df9ff" emissive="#7df9ff" emissiveIntensity={1} />
+          </mesh>
+        )}
+        {savedPoints?.map((pt, idx) => (
+          <mesh key={`saved-${idx}`} position={pt}>
+            <sphereGeometry args={[0.015, 12, 12]} />
+            <meshStandardMaterial color="#ffcc66" emissive="#ffcc66" emissiveIntensity={0.8} />
+          </mesh>
+        ))}
       </Suspense>
-      <OrbitControls enableDamping dampingFactor={0.08} target={[0, 0, 0]} />
+      <OrbitControls
+        ref={controlsRef}
+        enableDamping
+        dampingFactor={0.08}
+        target={[0, 0, 0]}
+        enablePan
+      />
+      <CameraFollow />
     </Canvas>
   );
 }
